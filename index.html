@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 CSV 인포그래픽 대시보드</title>
+    <!-- Tailwind CSS (Styling) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PapaParse (CSV Parsing) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <!-- Chart.js (Data Visualization) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- FontAwesome (Icons) -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    
+    <style>
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+        
+        body {
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+        }
+
+        /* Toggle Switch CSS */
+        #auto-refresh-toggle:checked ~ .toggle-bg { background-color: #3b82f6; }
+        #auto-refresh-toggle:checked ~ .toggle-dot { transform: translateX(100%); }
+        
+        /* Custom Scrollbar for Table */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 antialiased min-h-screen pb-10">
+
+    <!-- Initial Loader -->
+    <div id="initial-loader" class="fixed inset-0 bg-white/90 backdrop-blur-sm z-50 flex flex-col items-center justify-center transition-opacity duration-500">
+        <div class="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p class="text-gray-700 font-medium text-lg">데이터를 동기화하는 중입니다...</p>
+    </div>
+
+    <!-- Header Toolbar -->
+    <header class="bg-white/90 backdrop-blur-md shadow-sm sticky top-0 z-40 border-b border-gray-200">
+        <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-3 w-full sm:w-auto justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-200">
+                        <i class="fas fa-chart-line text-xl"></i>
+                    </div>
+                    <h1 class="font-bold text-lg sm:text-xl text-gray-800 tracking-tight whitespace-nowrap">실시간 대시보드</h1>
+                </div>
+                <div class="text-xs text-gray-500 sm:hidden">
+                    최종: <span id="last-updated-mobile" class="font-semibold text-gray-700">-</span>
+                </div>
+            </div>
+            
+            <div class="flex flex-wrap items-center justify-center gap-4 sm:gap-6 w-full sm:w-auto">
+                <!-- Last Updated Desktop -->
+                <div class="text-sm text-gray-500 hidden sm:block whitespace-nowrap">
+                    최종 갱신: <span id="last-updated" class="font-semibold text-gray-700">-</span>
+                </div>
+
+                <!-- Auto Refresh Toggle -->
+                <label class="flex items-center cursor-pointer gap-2 shrink-0 border-l border-gray-200 pl-4 sm:pl-6" title="5초마다 자동으로 데이터를 불러옵니다">
+                    <div class="relative">
+                        <input type="checkbox" id="auto-refresh-toggle" class="sr-only" checked>
+                        <div class="block bg-gray-300 w-10 h-6 rounded-full transition-colors duration-300 toggle-bg"></div>
+                        <div class="dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform duration-300 toggle-dot shadow-sm"></div>
+                    </div>
+                    <span class="text-sm font-medium text-gray-700 hidden sm:inline">5초 자동 동기화</span>
+                    <span class="text-xs font-medium text-gray-700 sm:hidden">자동 동기화</span>
+                </label>
+
+                <div class="flex items-center gap-2 shrink-0">
+                    <!-- Manual Refresh -->
+                    <button id="manual-refresh" class="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors border border-gray-200" title="수동으로 새로고침">
+                        <i class="fas fa-sync-alt" id="refresh-icon"></i>
+                        <span class="hidden sm:inline">새로고침</span>
+                    </button>
+
+                    <!-- File Upload -->
+                    <div class="relative">
+                        <input type="file" id="file-upload" accept=".csv" class="hidden">
+                        <label for="file-upload" class="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-sm font-medium cursor-pointer shadow-sm shadow-blue-200 transition-colors" title="내 PC에서 CSV 파일 업로드">
+                            <i class="fas fa-file-upload"></i>
+                            <span class="hidden sm:inline">업로드</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Progress bar line -->
+        <div class="w-full h-1 bg-gray-100 absolute bottom-0 left-0">
+            <div id="progress-bar" class="h-full bg-blue-500 transition-all duration-75 ease-linear w-0"></div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6">
+        
+        <!-- Summary Cards Grid -->
+        <div id="summary-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+            <!-- Cards Dynamically Injected Here -->
+        </div>
+
+        <!-- Charts Grid -->
+        <div id="charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+            <!-- Charts Dynamically Injected Here -->
+        </div>
+
+        <!-- Data Table -->
+        <div id="table-wrapper" class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col hidden">
+            <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-table text-blue-500"></i> 데이터 상세 조회
+                </h2>
+                <span class="text-xs text-gray-500 bg-white px-3 py-1 rounded-full border border-gray-200 shadow-sm" id="table-row-count"></span>
+            </div>
+            <div id="data-table" class="p-0">
+                 <!-- Table Dynamically Injected Here -->
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+    <script>
+        // Target Google Sheets CSV URL
+        const SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTFcX_Tyf1UPft3kI7kxGN_M4E61EbCSsBQoJaDhoszbAdOFiiJO6DbaXCTAYOc2csdtDLZRyJa0Si5/pub?gid=1179890107&single=true&output=csv';
+
+        // State Variables
+        let currentData = [];
+        let refreshTimer = null;
+        let progressTimer = null;
+        let progressValue = 0;
+        let isAutoRefresh = true;
+        let isFetching = false;
+        let chartInstances = [];
+        let windowSignature = ""; // Checks if columns changed to recreate charts
+
+        // Initialize Application
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            fetchCSV(false, true); // First load
+            if (isAutoRefresh) startAutoRefresh();
+        });
+
+        function setupEventListeners() {
+            document.getElementById('manual-refresh').addEventListener('click', () => {
+                fetchCSV(true);
+                // Reset progress bar if auto refresh is on
+                if(isAutoRefresh) progressValue = 0; 
+            });
+            
+            document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    startAutoRefresh();
+                    showToast('자동 동기화가 켜졌습니다.', 'info');
+                } else {
+                    stopAutoRefresh();
+                    showToast('자동 동기화가 꺼졌습니다.', 'info');
+                }
+            });
+
+            document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+        }
+
+        // Timer & Progress Bar Management
+        function startAutoRefresh() {
+            isAutoRefresh = true;
+            document.getElementById('auto-refresh-toggle').checked = true;
+            
+            if(refreshTimer) clearInterval(refreshTimer);
+            if(progressTimer) clearInterval(progressTimer);
+            
+            progressValue = 0;
+            
+            // Fetch every 5 seconds
+            refreshTimer = setInterval(() => {
+                fetchCSV(false);
+                progressValue = 0;
+            }, 5000);
+            
+            // Animate progress bar (update every 50ms = 100 updates over 5000ms)
+            const bar = document.getElementById('progress-bar');
+            progressTimer = setInterval(() => {
+                progressValue += 1; 
+                bar.style.width = `${progressValue}%`;
+                if (progressValue >= 100) progressValue = 100;
+            }, 50);
+        }
+
+        function stopAutoRefresh() {
+            isAutoRefresh = false;
+            document.getElementById('auto-refresh-toggle').checked = false;
+            
+            if(refreshTimer) clearInterval(refreshTimer);
+            if(progressTimer) clearInterval(progressTimer);
+            
+            document.getElementById('progress-bar').style.width = '0%';
+        }
+
+        // Core Data Fetching
+        function fetchCSV(isManual = false, isFirstLoad = false) {
+            if (isFetching) return;
+            isFetching = true;
+            
+            const icon = document.getElementById('refresh-icon');
+            if(isManual) icon.classList.add('animate-spin');
+            
+            // Add cache buster to force Google to give us the latest possible file
+            const urlWithCacheBuster = `${SHEET_URL}&_cb=${new Date().getTime()}`;
+
+            Papa.parse(urlWithCacheBuster, {
+                download: true,
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    isFetching = false;
+                    if(isManual) icon.classList.remove('animate-spin');
+                    if(isFirstLoad) hideLoader();
+
+                    if (results.data && results.data.length > 0) {
+                        currentData = results.data;
+                        updateDashboard(currentData);
+                        updateLastRefreshed();
+                        if(isManual) showToast('최신 데이터로 동기화되었습니다.', 'success');
+                    } else {
+                        if(isManual || isFirstLoad) renderEmptyState('Google Sheets 데이터가 비어있습니다.');
+                        if(isManual) showToast('CSV 데이터가 비어있습니다.', 'error');
+                    }
+                },
+                error: function(err) {
+                    isFetching = false;
+                    if(isManual) icon.classList.remove('animate-spin');
+                    if(isFirstLoad) hideLoader();
+                    console.error("Fetch Error:", err);
+                    if(isManual) showToast('데이터를 가져오는데 실패했습니다. 네트워크를 확인하세요.', 'error');
+                }
+            });
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            // Pause auto refresh when a local file is inspected
+            if (isAutoRefresh) {
+                stopAutoRefresh();
+                showToast('로컬 파일 분석을 위해 자동 동기화가 중단되었습니다.', 'info');
+            }
+
+            const loader = document.getElementById('initial-loader');
+            loader.querySelector('p').innerText = '파일을 분석하는 중입니다...';
+            loader.classList.remove('opacity-0', 'pointer-events-none');
+
+            Papa.parse(file, {
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    hideLoader();
+                    if (results.data && results.data.length > 0) {
+                        currentData = results.data;
+                        updateDashboard(currentData);
+                        updateLastRefreshed('로컬 파일 업로드됨');
+                        showToast('파일이 성공적으로 로드되었습니다.', 'success');
+                    } else {
+                        renderEmptyState('업로드된 파일에 데이터가 없습니다.');
+                        showToast('업로드된 파일이 비어있습니다.', 'error');
+                    }
+                    // Reset input
+                    event.target.value = '';
+                },
+                error: function(err) {
+                    hideLoader();
+                    showToast('파일을 읽는 중 오류가 발생했습니다.', 'error');
+                    event.target.value = '';
+                }
+            });
+        }
+
+        // Dashboard Rendering Logic
+        function updateDashboard(data) {
+            document.getElementById('table-wrapper').classList.remove('hidden');
+
+            const headers = Object.keys(data[0]);
+            const currentSignature = headers.join('|');
+
+            // Find column types (Numeric vs Categorical) by looking at first valid row
+            let numericCols = [];
+            let categoricalCols = [];
+            
+            headers.forEach(header => {
+                const val = data.find(row => row[header] !== null && row[header] !== undefined && row[header] !== '')?.[header];
+                if (typeof val === 'number') numericCols.push(header);
+                else categoricalCols.push(header);
+            });
+
+            const labelCol = categoricalCols.length > 0 ? categoricalCols[0] : headers[0];
+
+            // If column structure changes, destroy charts and rebuild to prevent errors
+            if (windowSignature !== currentSignature) {
+                clearCharts();
+                renderSummaryCards(data, numericCols);
+                renderChartsFull(data, labelCol, numericCols, categoricalCols);
+                windowSignature = currentSignature;
+            } else {
+                // Same structure: Update Data softly without animation reset
+                updateSummaryCards(data, numericCols);
+                updateChartsData(data, labelCol, numericCols, categoricalCols);
+            }
+            
+            renderTable(data, headers);
+        }
+
+        // --- 1. Summary Cards ---
+        function createCardHTML(title, value, icon, colorClass) {
+            return `
+            <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5 hover:shadow-md transition-shadow">
+                <div class="w-14 h-14 ${colorClass} rounded-2xl flex items-center justify-center text-white text-2xl shadow-inner flex-shrink-0">
+                    <i class="${icon}"></i>
+                </div>
+                <div class="overflow-hidden w-full">
+                    <p class="text-sm font-medium text-gray-500 truncate mb-1">${title}</p>
+                    <h4 class="text-2xl font-bold text-gray-800 truncate tracking-tight" title="${value}">${value}</h4>
+                </div>
+            </div>
+            `;
+        }
+
+        function renderSummaryCards(data, numericCols) {
+            const container = document.getElementById('summary-cards');
+            let html = createCardHTML("총 데이터 항목", data.length.toLocaleString() + " 개", "fas fa-layer-group", "bg-blue-500");
+
+            const cols = numericCols.slice(0, 3);
+            const colors = ["bg-emerald-500", "bg-amber-500", "bg-purple-500"];
+            const icons = ["fas fa-chart-line", "fas fa-coins", "fas fa-chart-pie"];
+
+            cols.forEach((col, idx) => {
+                const sum = data.reduce((acc, row) => acc + (Number(row[col]) || 0), 0);
+                const formatted = isNaN(sum) ? '0' : new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 1 }).format(sum);
+                html += createCardHTML(`${col} (합계)`, formatted, icons[idx], colors[idx]);
+            });
+
+            container.innerHTML = html;
+        }
+
+        function updateSummaryCards(data, numericCols) {
+            renderSummaryCards(data, numericCols);
+        }
+
+        // --- 2. Charts ---
+        function createChartCanvas(id, container, title, type, labels, datasetLabel, dataValues) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'bg-white p-5 sm:p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col';
+            
+            const titleEl = document.createElement('h3');
+            titleEl.className = 'text-lg font-bold text-gray-800 mb-6 flex items-center gap-2';
+            const icon = type === 'line' ? 'fa-chart-area' : (type === 'doughnut' ? 'fa-chart-pie' : 'fa-chart-bar');
+            titleEl.innerHTML = `<i class="fas ${icon} text-blue-500"></i> ${title}`;
+            wrapper.appendChild(titleEl);
+
+            const canvasContainer = document.createElement('div');
+            canvasContainer.className = 'relative w-full h-64 sm:h-80';
+            
+            const canvas = document.createElement('canvas');
+            canvas.id = id;
+            canvasContainer.appendChild(canvas);
+            wrapper.appendChild(canvasContainer);
+            
+            container.appendChild(wrapper);
+
+            const ctx = canvas.getContext('2d');
+            
+            const bgColors = [
+                'rgba(59, 130, 246, 0.7)',  // Blue
+                'rgba(16, 185, 129, 0.7)',  // Emerald
+                'rgba(245, 158, 11, 0.7)',  // Amber
+                'rgba(139, 92, 246, 0.7)',  // Violet
+                'rgba(236, 72, 153, 0.7)',  // Pink
+                'rgba(14, 165, 233, 0.7)',  // Sky
+            ];
+            const borderColors = [
+                'rgb(59, 130, 246)', 'rgb(16, 185, 129)', 'rgb(245, 158, 11)',
+                'rgb(139, 92, 246)', 'rgb(236, 72, 153)', 'rgb(14, 165, 233)',
+            ];
+
+            const isPie = type === 'doughnut' || type === 'pie';
+            const primaryColorIndex = chartInstances.length % bgColors.length;
+
+            const chartConfig = {
+                type: type,
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: datasetLabel,
+                        data: dataValues,
+                        backgroundColor: isPie ? bgColors : bgColors[primaryColorIndex],
+                        borderColor: isPie ? borderColors : borderColors[primaryColorIndex],
+                        borderWidth: 1,
+                        tension: 0.3,
+                        fill: type === 'line' ? {target: 'origin', below: 'rgba(59, 130, 246, 0.1)'} : false,
+                        borderRadius: type === 'bar' ? 4 : 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: isPie,
+                            position: 'right',
+                            labels: { usePointStyle: true, boxWidth: 8 }
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                            titleColor: '#1f2937',
+                            bodyColor: '#4b5563',
+                            borderColor: '#e5e7eb',
+                            borderWidth: 1,
+                            padding: 10,
+                            boxPadding: 4,
+                            usePointStyle: true
+                        }
+                    },
+                    scales: isPie ? {} : {
+                        x: { grid: { display: false } },
+                        y: { grid: { color: '#f3f4f6' }, beginAtZero: true }
+                    },
+                    animation: {
+                        duration: 800 // smooth entry
+                    }
+                }
+            };
+
+            const chart = new Chart(ctx, chartConfig);
+            chartInstances.push(chart);
+        }
+
+        function clearCharts() {
+            chartInstances.forEach(chart => chart.destroy());
+            chartInstances = [];
+            document.getElementById('charts-container').innerHTML = '';
+        }
+
+        function renderChartsFull(data, labelCol, numericCols, categoricalCols) {
+            const chartContainer = document.getElementById('charts-container');
+            
+            // Limit to max 50 points for visualization
+            const chartData = data.slice(0, 50);
+            const labels = chartData.map(row => String(row[labelCol] || ''));
+
+            if (numericCols.length > 0) {
+                // 1. Bar Chart (1st numeric)
+                const valCol1 = numericCols[0];
+                const values1 = chartData.map(row => Number(row[valCol1]) || 0);
+                createChartCanvas('chart-1', chartContainer, `${labelCol} 기준 ${valCol1}`, 'bar', labels, valCol1, values1);
+
+                if (numericCols.length > 1) {
+                    // 2. Line Chart (2nd numeric)
+                    const valCol2 = numericCols[1];
+                    const values2 = chartData.map(row => Number(row[valCol2]) || 0);
+                    createChartCanvas('chart-2', chartContainer, `${labelCol} 기준 ${valCol2} (추세)`, 'line', labels, valCol2, values2);
+                } else {
+                    // 2. Doughnut Chart (Top 5 of 1st numeric)
+                    const top5 = [...chartData].sort((a,b) => (b[valCol1]||0) - (a[valCol1]||0)).slice(0, 6);
+                    const pLabels = top5.map(row => String(row[labelCol] || ''));
+                    const pValues = top5.map(row => Number(row[valCol1]) || 0);
+                    createChartCanvas('chart-2', chartContainer, `상위 6 항목 (${valCol1})`, 'doughnut', pLabels, valCol1, pValues);
+                }
+            } else {
+                // Fallback: Frequency chart of categorical labels
+                const freqs = {};
+                data.forEach(row => {
+                    const val = row[labelCol] || 'Unknown';
+                    freqs[val] = (freqs[val] || 0) + 1;
+                });
+                // Sort by frequency
+                const sortedLabels = Object.keys(freqs).sort((a,b) => freqs[b] - freqs[a]).slice(0, 10);
+                const pValues = sortedLabels.map(l => freqs[l]);
+                createChartCanvas('chart-1', chartContainer, `${labelCol} 빈도수 분석`, 'doughnut', sortedLabels, '빈도수', pValues);
+            }
+        }
+
+        function updateChartsData(data, labelCol, numericCols, categoricalCols) {
+            const chartData = data.slice(0, 50);
+            const labels = chartData.map(row => String(row[labelCol] || ''));
+            let chartIdx = 0;
+
+            if (numericCols.length > 0) {
+                const valCol1 = numericCols[0];
+                const values1 = chartData.map(row => Number(row[valCol1]) || 0);
+                if(chartInstances[chartIdx]) {
+                    chartInstances[chartIdx].data.labels = labels;
+                    chartInstances[chartIdx].data.datasets[0].data = values1;
+                    chartInstances[chartIdx].update('none'); // Update smoothly without animation re-trigger
+                }
+                chartIdx++;
+
+                if (numericCols.length > 1) {
+                    const valCol2 = numericCols[1];
+                    const values2 = chartData.map(row => Number(row[valCol2]) || 0);
+                    if(chartInstances[chartIdx]) {
+                        chartInstances[chartIdx].data.labels = labels;
+                        chartInstances[chartIdx].data.datasets[0].data = values2;
+                        chartInstances[chartIdx].update('none');
+                    }
+                } else {
+                    const top5 = [...chartData].sort((a,b) => (b[valCol1]||0) - (a[valCol1]||0)).slice(0, 6);
+                    if(chartInstances[chartIdx]) {
+                        chartInstances[chartIdx].data.labels = top5.map(row => String(row[labelCol] || ''));
+                        chartInstances[chartIdx].data.datasets[0].data = top5.map(row => Number(row[valCol1]) || 0);
+                        chartInstances[chartIdx].update('none');
+                    }
+                }
+            } else {
+                const freqs = {};
+                data.forEach(row => {
+                    const val = row[labelCol] || 'Unknown';
+                    freqs[val] = (freqs[val] || 0) + 1;
+                });
+                const sortedLabels = Object.keys(freqs).sort((a,b) => freqs[b] - freqs[a]).slice(0, 10);
+                if(chartInstances[chartIdx]) {
+                    chartInstances[chartIdx].data.labels = sortedLabels;
+                    chartInstances[chartIdx].data.datasets[0].data = sortedLabels.map(l => freqs[l]);
+                    chartInstances[chartIdx].update('none');
+                }
+            }
+        }
+
+        // --- 3. Data Table ---
+        function renderTable(data, headers) {
+            const tableContainer = document.getElementById('data-table');
+            const ROW_LIMIT = 150; // Performance limit for DOM
+            const displayData = data.slice(0, ROW_LIMIT);
+            
+            document.getElementById('table-row-count').innerText = `총 ${data.length.toLocaleString()}행 중 ${displayData.length}행 표시`;
+
+            let html = `
+                <div class="overflow-x-auto max-h-[500px] relative">
+                    <table class="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead class="bg-gray-50/95 sticky top-0 backdrop-blur z-10 shadow-sm">
+                            <tr>
+                                ${headers.map(h => `<th class="px-6 py-4 text-left font-semibold text-gray-600 uppercase tracking-wider whitespace-nowrap">${h}</th>`).join('')}
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-100">
+            `;
+
+            displayData.forEach(row => {
+                html += `<tr class="hover:bg-blue-50/50 transition-colors">`;
+                headers.forEach(h => {
+                    let cellVal = row[h] !== null && row[h] !== undefined ? row[h] : '-';
+                    // Optional: Format numbers nicely in table
+                    if (typeof cellVal === 'number') {
+                        cellVal = new Intl.NumberFormat('ko-KR').format(cellVal);
+                    }
+                    html += `<td class="px-6 py-3 whitespace-nowrap text-gray-600">${cellVal}</td>`;
+                });
+                html += `</tr>`;
+            });
+
+            html += `
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            
+            tableContainer.innerHTML = html;
+        }
+
+        // Utilities
+        function renderEmptyState(message) {
+            clearCharts();
+            document.getElementById('summary-cards').innerHTML = '';
+            document.getElementById('table-wrapper').classList.add('hidden');
+            
+            const container = document.getElementById('charts-container');
+            container.innerHTML = `
+                <div class="col-span-1 lg:col-span-2 bg-white rounded-2xl p-16 flex flex-col items-center justify-center text-gray-500 border border-gray-100 shadow-sm text-center">
+                    <i class="fas fa-folder-open text-6xl text-gray-300 mb-5"></i>
+                    <h2 class="text-xl font-bold text-gray-700">${message}</h2>
+                    <p class="mt-2 text-sm text-gray-500">연결된 Google Sheets에 데이터가 존재하거나, 올바른 CSV 파일을 업로드했는지 확인해주세요.</p>
+                </div>
+            `;
+        }
+
+        function updateLastRefreshed(customText = null) {
+            const now = new Date();
+            const timeStr = customText || now.toLocaleTimeString('ko-KR', { hour12: false });
+            document.getElementById('last-updated').innerText = timeStr;
+            document.getElementById('last-updated-mobile').innerText = timeStr;
+        }
+
+        function hideLoader() {
+            const loader = document.getElementById('initial-loader');
+            if (loader) {
+                loader.classList.add('opacity-0', 'pointer-events-none');
+                setTimeout(() => loader.remove(), 500);
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            const colors = {
+                success: 'bg-emerald-600',
+                error: 'bg-red-500',
+                info: 'bg-blue-600'
+            };
+            const icons = {
+                success: 'fa-check-circle',
+                error: 'fa-exclamation-triangle',
+                info: 'fa-info-circle'
+            };
+
+            toast.className = `${colors[type]} text-white px-5 py-3.5 rounded-xl shadow-lg transform transition-all duration-300 translate-y-10 opacity-0 flex items-center gap-3 w-max max-w-xs sm:max-w-md font-medium text-sm`;
+            toast.innerHTML = `<i class="fas ${icons[type]} text-lg"></i> <span>${message}</span>`;
+            
+            container.appendChild(toast);
+            
+            // Animate In
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-y-10', 'opacity-0');
+            });
+
+            // Animate Out & Remove
+            setTimeout(() => {
+                toast.classList.add('translate-y-10', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
